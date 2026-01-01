@@ -35,56 +35,18 @@ def get_claude_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 
-# ---------- Image helper: normalize to PNG & downscale ----------
+# ---------- Image helper: normalize to PNG ----------
 
-def to_png_bytes(raw_bytes: bytes, target_max_bytes: int = 4_000_000) -> bytes:
+def to_png_bytes(raw_bytes: bytes) -> bytes:
     """
     Open the uploaded image and re-encode it as PNG bytes.
-
-    Additionally, aggressively downscale large images so the final PNG
-    stays under target_max_bytes (default ~4 MB), even if the original
-    upload is huge (e.g. up to 100 MB).
+    This avoids media-type mismatches like 'image/jpeg' vs webp/other.
     """
     img = Image.open(BytesIO(raw_bytes))
-
-    # Normalize mode
-    if img.mode in ("P", "LA"):
-        img = img.convert("RGBA")
-    else:
-        img = img.convert("RGB")
-
-    def encode_png(i: Image.Image) -> bytes:
-        buf = BytesIO()
-        i.save(buf, format="PNG", optimize=True)
-        return buf.getvalue()
-
-    # Initial encode
-    png_bytes = encode_png(img)
-
-    # If already under target size, we're done
-    if len(png_bytes) <= target_max_bytes:
-        return png_bytes
-
-    # Otherwise, progressively downscale until under target_max_bytes
-    # or we hit a minimum size.
-    MAX_DOWNSCALE_STEPS = 6
-    MIN_DIM = 512  # don't shrink below this
-
-    for _ in range(MAX_DOWNSCALE_STEPS):
-        w, h = img.size
-        if w <= MIN_DIM or h <= MIN_DIM:
-            break
-
-        # shrink by 30% each step
-        new_w = int(w * 0.7)
-        new_h = int(h * 0.7)
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-
-        png_bytes = encode_png(img)
-        if len(png_bytes) <= target_max_bytes:
-            break
-
-    return png_bytes
+    rgb = img.convert("RGBA") if img.mode in ("P", "LA") else img.convert("RGB")
+    buf = BytesIO()
+    rgb.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 # ---------- Claude helper ----------
@@ -98,7 +60,7 @@ def describe_image_with_claude(image_bytes: bytes, max_words: int) -> str:
     # Hard cap at 300 words regardless of slider
     max_words = min(max_words, 300)
 
-    # Normalize image to PNG & downscale if needed
+    # Normalize image to PNG to avoid media-type mismatch
     png_bytes = to_png_bytes(image_bytes)
     b64_image = base64.b64encode(png_bytes).decode("utf-8")
 
@@ -171,7 +133,6 @@ with open(CAT_PATH, "rb") as f:
     cat_b64 = base64.b64encode(f.read()).decode("utf-8")
 
 # ---------- Styles ----------
-
 st.markdown(
     f"""
     <style>
@@ -239,7 +200,6 @@ st.markdown(
 st.markdown('<div class="describer-card">', unsafe_allow_html=True)
 
 # ---------- Center Cat ----------
-
 st.markdown(
     f"""
     <div class="hero-cat-wrap">
@@ -250,33 +210,23 @@ st.markdown(
 )
 
 # ---------- Title ----------
-
 st.markdown('<div class="describer-title">The Describer</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="describer-subtitle">Upload an image and get a concise AI-generated description.</div>',
     unsafe_allow_html=True,
 )
 
-# ---------- Upload (with 100 MB limit) ----------
-
+# ---------- Upload ----------
 uploaded_file = st.file_uploader(
     "Drop image here or click to upload",
     type=["png", "jpg", "jpeg", "gif", "webp"],
     label_visibility="collapsed",
 )
 
-MAX_UPLOAD_MB = 100
-MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-
-if uploaded_file is not None:
-    if uploaded_file.size > MAX_UPLOAD_BYTES:
-        st.error(f"File is too large. Maximum allowed size is {MAX_UPLOAD_MB} MB.")
-        uploaded_file = None
-    else:
-        st.image(uploaded_file)
+if uploaded_file:
+    st.image(uploaded_file)
 
 # ---------- Slider ----------
-
 max_words = st.slider(
     "Description Length (words)",
     min_value=1,
@@ -296,7 +246,7 @@ if clear_clicked:
 
 if describe_clicked:
     if uploaded_file is None:
-        st.warning("Please upload an image first (max 100 MB).")
+        st.warning("Please upload an image first.")
     else:
         with st.spinner("Asking Claude to describe your image..."):
             try:
@@ -315,7 +265,6 @@ else:
     st.write("_No description yet. Upload an image and click **Describe**._")
 
 # ---------- Copy Controls ----------
-
 col_copy, col_clear2 = st.columns([1, 1])
 with col_copy:
     copy_clicked = st.button("Copy", use_container_width=True)
